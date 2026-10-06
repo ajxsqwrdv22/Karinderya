@@ -22,6 +22,8 @@ import {
   SCHEMA_SQL,
   SCHEMA_VERSION,
 } from '../src/services/schema.ts';
+import { buildSku, slugify } from '../src/services/sku.ts';
+import { seedDishes, seedIngredients } from '../src/data/seed.ts';
 
 let passed = 0;
 let failed = 0;
@@ -235,6 +237,31 @@ db.close();
 for (const suffix of ['', '-wal', '-shm']) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
+
+section('SKU generation (pure logic)');
+check('slugifies a normal name', buildSku('Beef Tapa', []) === 'beef-tapa', buildSku('Beef Tapa', []));
+check('collapses punctuation and case', buildSku('  Sinigang  na   Baboy! ', []) === 'sinigang-na-baboy',
+  buildSku('  Sinigang  na   Baboy! ', []));
+check('falls back to "item" for unusable input', buildSku('***', []) === 'item', buildSku('***', []));
+check('appends a suffix on collision',
+  buildSku('Beef Tapa', [{ sku: 'beef-tapa' }]) === 'beef-tapa-2',
+  buildSku('Beef Tapa', [{ sku: 'beef-tapa' }]));
+check('keeps counting past a gap',
+  buildSku('Beef Tapa', [{ sku: 'beef-tapa' }, { sku: 'beef-tapa-2' }, { sku: 'beef-tapa-3' }]) === 'beef-tapa-4',
+  buildSku('Beef Tapa', [{ sku: 'beef-tapa' }, { sku: 'beef-tapa-2' }, { sku: 'beef-tapa-3' }]));
+
+section('Seed data matches the schema');
+check('every seeded dish has a positive price',
+  seedDishes.every((dish) => dish.price > 0));
+check('every seeded ingredient has a par level',
+  seedIngredients.every((ingredient) => ingredient.parLevel > 0));
+const ingredientSkus = new Set(seedIngredients.map((i) => i.id));
+const dishSkus = new Set(seedDishes.map((d) => d.id));
+check('no duplicate SKUs across dishes and ingredients',
+  [...ingredientSkus].every((sku) => !dishSkus.has(sku)),
+  [...ingredientSkus].filter((sku) => dishSkus.has(sku)).join(', '));
+check('seed SKUs survive slugify unchanged',
+  seedDishes.every((dish) => slugify(dish.id) === dish.id));
 
 console.log(`\n${'-'.repeat(52)}`);
 console.log(`${passed} passed, ${failed} failed`);

@@ -167,7 +167,7 @@ export function createProduct(input: NewProduct): number {
   return result.lastInsertRowId;
 }
 
-export function updateProduct(id: number, input: NewProduct): void {
+export function updateProduct(id: number, input: Omit<NewProduct, 'sku'>): void {
   db.runSync(
     QUERIES.updateProduct,
     input.name,

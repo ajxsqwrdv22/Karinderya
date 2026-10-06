@@ -1,47 +1,126 @@
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  Alert,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { AppBar, AppBarIcon } from '../../components/AppBar';
-import { Icon } from '../../components/Icon';
+import { Icon, type IconName } from '../../components/Icon';
+import {
+  ProductFormModal,
+  type DraftProduct,
+} from '../../components/ProductFormModal';
 import { Screen } from '../../components/Screen';
 import { Chip, Fab, SegmentedControl } from '../../components/ui';
-import { stockFilters } from '../../data/seed';
-import type { Ingredient, IngredientStatus } from '../../data/types';
-import { useAppState } from '../../store/AppState';
+import { useProducts, type ProductRow } from '../../hooks/useProducts';
+import {
+  addProduct,
+  changeStock,
+  editProduct,
+  removeProduct,
+} from '../../services/catalogueStore';
 import { colors, radius, shadow, spacing, text as type } from '../../theme';
-import { percent, withUnit } from '../../utils/format';
+import { percent } from '../../utils/format';
 
 type Tab = 'Ingredients' | 'Dishes';
 
+/** Menu categories, as opposed to the single "Ingredients" category. */
+const DISH_CATEGORIES = ['Ulam', 'Rice', 'Soup', 'Drinks', 'Extras'];
+const STOCK_FILTERS = ['All', 'Low Stock', 'Out of Stock'] as const;
+
 export default function InventoryScreen() {
-  const { ingredients, dishes, restock, imageFor, addToCart } = useAppState();
+  const { products, query, search } = useProducts();
 
   const [tab, setTab] = useState<Tab>('Ingredients');
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<(typeof stockFilters)[number]>('All');
+  const [stockFilter, setStockFilter] = useState<(typeof STOCK_FILTERS)[number]>('All');
+  const [editing, setEditing] = useState<ProductRow | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
 
-  const filteredIngredients = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+  /** The segmented control maps onto a SQL category filter. */
+  const visible = useMemo(() => {
+    const inTab =
+      tab === 'Ingredients'
+        ? products.filter((product) => product.category === 'Ingredients')
+        : products.filter((product) => DISH_CATEGORIES.includes(product.category));
 
-    return ingredients.filter((ingredient) => {
-      const matchesQuery =
-        needle.length === 0 || ingredient.name.toLowerCase().includes(needle);
-      const matchesFilter =
-        filter === 'All' ||
-        (filter === 'Low Stock' && ingredient.status === 'low') ||
-        (filter === 'Out of Stock' && ingredient.status === 'out');
-      return matchesQuery && matchesFilter;
-    });
-  }, [ingredients, query, filter]);
+    if (tab === 'Dishes' || stockFilter === 'All') return inTab;
 
-  const filteredDishes = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return dishes.filter(
-      (dish) =>
-        dish.available &&
-        (needle.length === 0 || dish.name.toLowerCase().includes(needle)),
+    return inTab.filter((product) =>
+      stockFilter === 'Low Stock'
+        ? product.stock < product.par_level && product.stock > 0
+        : product.stock === 0,
     );
-  }, [dishes, query]);
+  }, [products, tab, stockFilter]);
+
+  const openCreate = useCallback(() => {
+    setEditing(null);
+    setFormOpen(true);
+  }, []);
+
+  const openEdit = useCallback((product: ProductRow) => {
+    setEditing(product);
+    setFormOpen(true);
+  }, []);
+
+  const closeForm = useCallback(() => {
+    setFormOpen(false);
+    setEditing(null);
+  }, []);
+
+  const handleSubmit = useCallback(
+    (draft: DraftProduct) => {
+      const input = {
+        name: draft.name.trim(),
+        category: draft.category,
+        price: Number(draft.price),
+        stock: Number(draft.stock),
+        unit: draft.unit,
+        parLevel: draft.parLevel.trim() === '' ? Number(draft.stock) : Number(draft.parLevel),
+      };
+
+      if (editing) {
+        editProduct(editing.id, input);
+      } else {
+        addProduct(input);
+      }
+      closeForm();
+    },
+    [editing, closeForm],
+  );
+
+  /** Step 5 of the lab: confirm, then DELETE the row. */
+  const confirmDelete = useCallback((product: ProductRow) => {
+    Alert.alert(
+      'Delete item',
+      `Remove ${product.name} from the database? Past sales keep their record.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => removeProduct(product.id),
+        },
+      ],
+    );
+  }, []);
+
+  const restockAll = useCallback(() => {
+    Alert.alert('Restock', `Top every low item up to its par level?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Restock',
+        onPress: () =>
+          products
+            .filter((product) => product.stock < product.par_level)
+            .forEach((product) => changeStock(product.id, product.par_level - product.stock)),
+      },
+    ]);
+  }, [products]);
 
   return (
     <Screen>
@@ -50,17 +129,13 @@ export default function InventoryScreen() {
         actions={<AppBarIcon name="search" accessibilityLabel="Search inventory" />}
       />
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View style={styles.controls}>
         <SegmentedControl
           options={['Ingredients', 'Dishes'] as const}
           value={tab}
           onChange={(next) => {
             setTab(next);
-            setFilter('All');
+            setStockFilter('All');
           }}
         />
 
@@ -68,214 +143,229 @@ export default function InventoryScreen() {
           <Icon name="search" size={18} color={colors.textMuted} />
           <TextInput
             value={query}
-            onChangeText={setQuery}
-            placeholder={tab === 'Ingredients' ? 'Search ingredients' : 'Search dishes'}
+            onChangeText={search}
+            placeholder="Search by name or category (SQL LIKE)"
             placeholderTextColor={colors.textMuted}
             style={styles.searchInput}
             returnKeyType="search"
             autoCorrect={false}
+            autoCapitalize="none"
           />
+          {query.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              onPress={() => search('')}
+            >
+              <Icon name="close" size={16} color={colors.textFaint} />
+            </Pressable>
+          ) : null}
         </View>
 
         {tab === 'Ingredients' ? (
           <View style={styles.filters}>
-            {stockFilters.map((option) => (
+            {STOCK_FILTERS.map((option) => (
               <Chip
                 key={option}
                 label={option}
-                selected={filter === option}
-                onPress={() => setFilter(option)}
+                selected={stockFilter === option}
+                onPress={() => setStockFilter(option)}
               />
             ))}
           </View>
         ) : null}
+      </View>
 
-        {tab === 'Ingredients' ? (
-          <View style={styles.list}>
-            {filteredIngredients.map((ingredient) => (
-              <IngredientRow
-                key={ingredient.id}
-                ingredient={ingredient}
-                onRestock={() => restock(ingredient.id)}
-              />
-            ))}
-            {filteredIngredients.length === 0 ? (
-              <Text style={styles.empty}>No ingredients match your filters.</Text>
-            ) : null}
-          </View>
-        ) : (
-          <View style={styles.list}>
-            {filteredDishes.map((dish) => (
-              <DishRow
-                key={dish.id}
-                name={dish.name}
-                price={dish.price}
-                level={dish.stockLevel}
-                image={imageFor(dish.id)}
-                onAdd={() => addToCart(dish)}
-              />
-            ))}
-            {filteredDishes.length === 0 ? (
-              <Text style={styles.empty}>No dishes match your search.</Text>
-            ) : null}
-          </View>
+      {/* Step 3 of the lab: rows come straight out of SQL into a FlatList. */}
+      <FlatList
+        data={visible}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        renderItem={({ item }) => (
+          <ProductCard
+            product={item}
+            isDish={tab === 'Dishes'}
+            onAdjust={(delta) => changeStock(item.id, delta)}
+            onEdit={() => openEdit(item)}
+            onDelete={() => confirmDelete(item)}
+          />
         )}
-      </ScrollView>
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text style={styles.emptyText}>
+              {query.length > 0
+                ? `No rows match “${query}”.`
+                : 'No rows in this category yet.'}
+            </Text>
+          </View>
+        }
+      />
 
       <View style={styles.fabWrap} pointerEvents="box-none">
-        <Fab label="Add Item" />
+        <Fab label="Add Item" onPress={openCreate} />
       </View>
+
+      {tab === 'Ingredients' && products.some((p) => p.stock < p.par_level) ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={restockAll}
+          style={styles.restockAll}
+        >
+          <Icon name="check" size={12} color={colors.primary} />
+          <Text style={styles.restockAllLabel}>Restock all</Text>
+        </Pressable>
+      ) : null}
+
+      <ProductFormModal
+        visible={formOpen}
+        initial={
+          editing
+            ? {
+                name: editing.name,
+                category: editing.category,
+                price: String(editing.price),
+                stock: String(editing.stock),
+                unit: editing.unit,
+                parLevel: String(editing.par_level),
+              }
+            : null
+        }
+        onClose={closeForm}
+        onSubmit={handleSubmit}
+      />
     </Screen>
   );
 }
 
-const statusMeta: Record<
-  IngredientStatus,
-  { bar: string; label: string; tone: string; iconBg: string }
-> = {
-  healthy: {
-    bar: colors.success,
-    label: 'Stock level is healthy',
-    tone: colors.textMuted,
-    iconBg: colors.primaryTint,
-  },
-  low: {
-    bar: colors.danger,
-    label: 'LOW STOCK',
-    tone: colors.danger,
-    iconBg: colors.dangerSoft,
-  },
-  out: {
-    bar: colors.track,
-    label: 'OUT OF STOCK',
-    tone: colors.danger,
-    iconBg: colors.dangerSoft,
-  },
-};
-
-function IngredientRow({
-  ingredient,
-  onRestock,
+function ProductCard({
+  product,
+  isDish,
+  onAdjust,
+  onEdit,
+  onDelete,
 }: {
-  ingredient: Ingredient;
-  onRestock: () => void;
+  product: ProductRow;
+  isDish: boolean;
+  onAdjust: (delta: number) => void;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
-  const meta = statusMeta[ingredient.status];
-  const level = percent(ingredient.quantity, ingredient.parLevel);
-  const needsRestock = ingredient.status !== 'healthy';
+  const level = percent(product.stock, product.par_level);
+  const out = product.stock === 0;
+  const low = !out && level < 100;
+  const healthy = !out && !low;
+
+  const statusText = out
+    ? 'OUT OF STOCK'
+    : low
+      ? `LOW STOCK · ${level}% of par`
+      : 'Stock level is healthy';
+
+  const statusColor = healthy ? colors.textMuted : colors.danger;
+  const iconBg = healthy ? colors.primaryTint : colors.dangerSoft;
+  const iconColor = healthy ? colors.primary : colors.danger;
+
+  const icon: IconName = isDish
+    ? 'utensils'
+    : product.category === 'Ingredients'
+      ? 'package'
+      : 'utensils';
 
   return (
-    <View style={styles.row}>
-      <View style={[styles.itemIcon, { backgroundColor: meta.iconBg }]}>
-        <Icon
-          name={ingredient.icon as never}
-          size={20}
-          color={needsRestock ? colors.danger : colors.primary}
-        />
+    <View style={styles.card}>
+      <View style={styles.cardTop}>
+        <View style={[styles.itemIcon, { backgroundColor: iconBg }]}>
+          <Icon name={icon} size={20} color={iconColor} />
+        </View>
+
+        <View style={styles.itemDetails}>
+          <View style={styles.nameRow}>
+            <Text style={styles.itemName} numberOfLines={1}>
+              {product.name}
+            </Text>
+            <Text style={[styles.itemQuantity, (out || low) && { color: colors.danger }]}>
+              {product.stock} {product.unit}
+            </Text>
+          </View>
+
+          <Text style={styles.itemMeta}>
+            {product.category}
+            {isDish ? ` · ₱${product.price.toFixed(2)}` : ''}
+          </Text>
+
+          <View style={styles.track}>
+            <View
+              style={[
+                styles.trackFill,
+                {
+                  width: `${level}%`,
+                  backgroundColor: out
+                    ? colors.track
+                    : healthy
+                      ? colors.success
+                      : colors.danger,
+                },
+              ]}
+            />
+          </View>
+
+          <Text style={[styles.itemStatus, { color: statusColor }]}>{statusText}</Text>
+        </View>
       </View>
 
-      <View style={styles.itemDetails}>
-        <View style={styles.nameRow}>
-          <Text style={styles.itemName} numberOfLines={1}>
-            {ingredient.name}
-          </Text>
-          <Text
-            style={[
-              styles.itemQuantity,
-              needsRestock && { color: colors.danger },
-            ]}
+      <View style={styles.cardActions}>
+        {/* Bonus criterion: +/- stock straight against the row. */}
+        <View style={styles.stepper}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Decrease ${product.name} stock`}
+            onPress={() => onAdjust(-1)}
+            style={styles.stepButton}
           >
-            {withUnit(ingredient.quantity, ingredient.unit)}
-          </Text>
+            <Icon name="minus" size={14} color={colors.primary} />
+          </Pressable>
+          <Text style={styles.stepValue}>{product.stock}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Increase ${product.name} stock`}
+            onPress={() => onAdjust(1)}
+            style={[styles.stepButton, styles.stepButtonFilled]}
+          >
+            <Icon name="plus" size={14} color={colors.surface} />
+          </Pressable>
         </View>
 
-        <View style={styles.track}>
-          <View
-            style={[
-              styles.trackFill,
-              {
-                width: `${level}%`,
-                backgroundColor: meta.bar,
-              },
-            ]}
-          />
-        </View>
+        {/* The "add to order" action is intentionally absent here: the POS cart
+            still reads from the Lab 04 store until Phase 2 moves it to SQLite,
+            and a button that wrote to a different store than POS reads would
+            look broken in a demo. */}
 
-        <Text style={[styles.itemStatus, { color: meta.tone }]}>{meta.label}</Text>
-      </View>
-
-      {needsRestock ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Restock ${ingredient.name}`}
-          onPress={onRestock}
-          style={({ pressed }) => [styles.restock, pressed && styles.pressed]}
+          accessibilityLabel={`Edit ${product.name}`}
+          onPress={onEdit}
+          style={({ pressed }) => [styles.iconAction, pressed && styles.pressed]}
         >
-          <Text style={styles.restockLabel}>Restock</Text>
+          <Icon name="receipt" size={16} color={colors.textMuted} />
         </Pressable>
-      ) : null}
-    </View>
-  );
-}
 
-function DishRow({
-  name,
-  price,
-  level,
-  image,
-  onAdd,
-}: {
-  name: string;
-  price: number;
-  level: number;
-  image: any;
-  onAdd: () => void;
-}) {
-  return (
-    <View style={styles.row}>
-      <View style={styles.itemIcon}>
-        <Icon name="utensils" size={20} color={colors.primary} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${product.name}`}
+          onPress={onDelete}
+          style={({ pressed }) => [styles.iconAction, styles.deleteAction, pressed && styles.pressed]}
+        >
+          <Icon name="close" size={16} color={colors.danger} />
+        </Pressable>
       </View>
-
-      <View style={styles.itemDetails}>
-        <View style={styles.nameRow}>
-          <Text style={styles.itemName} numberOfLines={1}>
-            {name}
-          </Text>
-          <Text style={[styles.itemQuantity, { color: colors.primary }]}>
-            ₱{price.toFixed(2)}
-          </Text>
-        </View>
-
-        <View style={styles.track}>
-          <View
-            style={[
-              styles.trackFill,
-              { width: `${percent(level, 1)}%`, backgroundColor: colors.success },
-            ]}
-          />
-        </View>
-
-        <Text style={styles.itemStatus}>
-          {image ? 'Available' : 'Available'} · {percent(level, 1)}% stock
-        </Text>
-      </View>
-
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Add ${name} to order`}
-        onPress={onAdd}
-        style={({ pressed }) => [styles.restock, pressed && styles.pressed]}
-      >
-        <Text style={styles.restockLabel}>Add</Text>
-      </Pressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.xl, paddingBottom: 96, gap: spacing.lg },
-
+  controls: { padding: spacing.xl, gap: spacing.lg },
   searchField: {
     height: 44,
     flexDirection: 'row',
@@ -288,34 +378,35 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   searchInput: { flex: 1, ...type.bodyLg, color: colors.text, padding: 0 },
-
   filters: { flexDirection: 'row', gap: spacing.md },
 
-  list: { gap: spacing.md },
-  empty: { ...type.bodyMd, color: colors.textMuted, textAlign: 'center', marginTop: spacing.xl },
+  list: { paddingHorizontal: spacing.xl, paddingBottom: 110, gap: spacing.md },
 
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.lg,
+  card: {
     padding: spacing.xl,
-    minHeight: 76,
+    gap: spacing.md,
     backgroundColor: colors.surface,
     borderRadius: radius.md,
     ...shadow.card,
   },
+  cardTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
   itemIcon: {
     width: 38,
     height: 38,
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.primaryTint,
   },
   itemDetails: { flex: 1, gap: 5 },
-  nameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
   itemName: { ...type.titleSm, color: colors.text, flexShrink: 1 },
   itemQuantity: { ...type.titleSm, color: colors.text, fontSize: 12, lineHeight: 14 },
+  itemMeta: { ...type.caption, color: colors.textMuted },
 
   track: {
     height: 5,
@@ -324,19 +415,61 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   trackFill: { height: 5, borderRadius: radius.pill },
+  itemStatus: { fontSize: 9, lineHeight: 11, fontWeight: '500' },
 
-  itemStatus: { fontSize: 9, lineHeight: 11, fontWeight: '500', color: colors.textMuted },
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primaryTint,
+  },
+  stepButton: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center' },
+  stepButtonFilled: {
+    width: 22,
+    height: 22,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+  },
+  stepValue: {
+    ...type.labelMd,
+    color: colors.text,
+    minWidth: 18,
+    textAlign: 'center',
+  },
+  iconAction: {
+    width: 30,
+    height: 30,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.neutralSoft,
+  },
+  deleteAction: { backgroundColor: colors.dangerSoft },
 
-  restock: {
-    paddingHorizontal: spacing.lg,
+  empty: { paddingVertical: spacing.xxxl, alignItems: 'center' },
+  emptyText: { ...type.bodyMd, color: colors.textMuted, textAlign: 'center' },
+
+  restockAll: {
+    position: 'absolute',
+    left: spacing.xl,
+    bottom: spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xl,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.primary,
-    alignItems: 'center',
+    ...shadow.card,
   },
-  restockLabel: { ...type.labelSm, color: colors.primary },
-  pressed: { opacity: 0.7 },
+  restockAllLabel: { ...type.labelSm, color: colors.primary },
 
   fabWrap: { position: 'absolute', right: spacing.xxxl, bottom: spacing.xl, alignItems: 'flex-end' },
+  pressed: { opacity: 0.75 },
 });

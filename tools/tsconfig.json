@@ -16,6 +16,7 @@
   "include": [
     "./**/*.ts",
     "../src/services/schema.ts",
+    "../src/services/sku.ts",
     "../src/data/seed.ts",
     "../src/data/types.ts"
   ]
