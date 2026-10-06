@@ -1,13 +1,15 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React from 'react';
+import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { SqliteNeedsDeviceNotice } from '../components/SqliteNeedsDeviceNotice';
 import { colors } from '../theme';
 
-export default function RootLayout() {
+function AppNavigator() {
   return (
-    <SafeAreaProvider>
+    <>
       <StatusBar style="dark" />
       <Stack
         screenOptions={{
@@ -19,6 +21,16 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="payment-success" />
       </Stack>
+    </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <SafeAreaProvider>
+      {/* expo-sqlite cannot open a database in a browser, so explain that
+          instead of letting the first query throw. */}
+      {Platform.OS === 'web' ? <SqliteNeedsDeviceNotice /> : <AppNavigator />}
     </SafeAreaProvider>
   );
 }

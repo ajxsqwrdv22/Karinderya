@@ -19,7 +19,38 @@ import {
  * here are tiny. Because these calls block the JS thread, none of them may be
  * invoked during render — only from effects and event handlers.
  */
-export const db = SQLite.openDatabaseSync(DATABASE_NAME);
+
+/**
+ * The open connection, created on first use.
+ *
+ * Opening at module scope would run as a side effect of *importing* this file,
+ * which turned an unsupported-platform problem into an unrecoverable crash on
+ * every screen. Deferring it means the app can report the problem properly
+ * instead of dying during startup.
+ */
+let connection: SQLite.SQLiteDatabase | null = null;
+
+export function getDatabase(): SQLite.SQLiteDatabase {
+  if (!connection) {
+    connection = SQLite.openDatabaseSync(DATABASE_NAME);
+  }
+  return connection;
+}
+
+/**
+ * Lazy stand-in for the database handle so every call site keeps reading
+ * `db.execSync(...)` / `db.getAllSync(...)` while the connection itself is only
+ * opened when the first query actually runs.
+ */
+export const db: SQLite.SQLiteDatabase = new Proxy({} as SQLite.SQLiteDatabase, {
+  get(_target, property) {
+    const instance = getDatabase() as unknown as Record<string | symbol, unknown>;
+    const value = instance[property];
+
+    // Bind methods so `this` refers to the real database instance.
+    return typeof value === 'function' ? value.bind(connection) : value;
+  },
+});
 
 // --- Row shapes --------------------------------------------------------
 
