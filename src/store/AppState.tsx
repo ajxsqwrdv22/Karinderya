@@ -8,9 +8,9 @@ import React, {
   useReducer,
 } from 'react';
 
+import { dishImages } from '../data/images';
 import {
   buildSeedPaidOrders,
-  dishImages,
   seedDishes,
   seedIngredients,
   seedTopSelling,

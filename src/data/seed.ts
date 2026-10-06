@@ -24,14 +24,9 @@ export const seedDishes: Dish[] = [
   { id: 'banana', name: 'Banana', price: 15, category: 'Extras', available: true, stockLevel: 0.52 },
 ];
 
-export const dishImages: Record<string, any> = {
-  'pork-adobo': require('../../assets/dishes/dish-pork-adobo.png'),
-  'sinigang-na-baboy': require('../../assets/dishes/dish-sinigang.png'),
-  'chicken-inasal': require('../../assets/dishes/dish-chicken-inasal.png'),
-  pinakbet: require('../../assets/dishes/dish-pinakbet.png'),
-  'beef-tapa': require('../../assets/dishes/dish-beef-tapa.png'),
-  laing: require('../../assets/dishes/dish-laing.png'),
-};
+// Dish photography lives in `images.ts` — it uses `require()` and must not be
+// imported by the Node-based SQL test harness.
+
 
 export const seedIngredients: Ingredient[] = [
   { id: 'rice', name: 'Rice', quantity: 12, parLevel: 15, unit: 'kg', status: 'healthy', icon: 'wheat' },

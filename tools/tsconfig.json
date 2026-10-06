@@ -1,0 +1,22 @@
+{
+  "//": "Type-check config for the Node-only SQL verification harness. Kept separate from the app tsconfig so Node globals (@types/node) never leak into React Native code.",
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/services/schema.ts",
+    "../src/data/seed.ts",
+    "../src/data/types.ts"
+  ]
+}
