@@ -21,14 +21,18 @@ import {
   SegmentedControl,
   SectionTitle,
 } from '../../components/ui';
-import type { Order, PaymentMethod } from '../../data/types';
-import { useAppState } from '../../store/AppState';
+import {
+  checkout,
+  payOrder,
+  usePosStore,
+  type PaymentMethod,
+} from '../../hooks/usePosStore';
 import { colors, radius, spacing, text as type } from '../../theme';
 import { friendlyDate, peso, to12Hour } from '../../utils/format';
 
 type Tab = 'Pending' | 'Paid';
 
-/** The in-progress POS order behaves like an order awaiting payment. */
+/** The in-progress basket is payable but not yet an order row. */
 const CART_TARGET = 'cart';
 
 const METHODS: { method: PaymentMethod; icon: IconName }[] = [
@@ -43,7 +47,7 @@ type PayableTarget = {
   id: string;
   number: string;
   createdAt: string;
-  lines: Order['lines'];
+  lines: { id: number; name: string; quantity: number; unitPrice: number }[];
   total: number;
 };
 
@@ -51,69 +55,69 @@ export default function PaymentScreen() {
   const router = useRouter();
   const {
     cart,
-    cartTotal,
-    pendingOrders,
-    paidOrders,
-    nextOrderNumber,
-    nameFor,
-    checkout,
-    payPendingOrder,
-  } = useAppState();
+    cartCount,
+    cartSubtotal,
+    draftOrderNumber,
+    orders,
+  } = usePosStore();
 
   const [tab, setTab] = useState<Tab>('Pending');
   const [method, setMethod] = useState<PaymentMethod>('Cash');
 
   /** `null` means "follow the default target"; a value pins the selection. */
   const [selected, setSelected] = useState<string | null>(null);
-  /** Cash typed for a specific target, so switching targets resets the field. */
+  /** Cash typed for one target only, so switching targets resets the field. */
   const [receivedFor, setReceivedFor] = useState<{ id: string; value: string } | null>(null);
 
-  const cartOrderNumber = String(nextOrderNumber - 1).padStart(4, '0');
+  const pendingOrders = useMemo(() => orders.filter((order) => order.status === 'pending'), [orders]);
+  const paidOrders = useMemo(() => orders.filter((order) => order.status === 'paid'), [orders]);
   const hasCart = cart.length > 0;
 
-  // Stable timestamp so the cart order does not change on every render.
-  const [cartCreatedAt] = useState(() => new Date().toISOString());
-
-  // Every order that can still be paid: the in-progress POS order first, then
-  // any orders already recorded as pending.
+  // Everything that can still be paid: the POS basket first, then held orders.
   const options = useMemo<PayableTarget[]>(() => {
     const all: PayableTarget[] = [];
 
     if (hasCart) {
       all.push({
         id: CART_TARGET,
-        number: cartOrderNumber,
-        createdAt: cartCreatedAt,
-        lines: cart,
-        total: cartTotal,
+        number: draftOrderNumber,
+        createdAt: new Date().toISOString(),
+        lines: cart.map((line) => ({
+          id: line.id,
+          name: line.name,
+          quantity: line.quantity,
+          unitPrice: line.unitPrice,
+        })),
+        total: cartSubtotal,
       });
     }
 
     pendingOrders.forEach((order) => {
       all.push({
-        id: order.id,
+        id: String(order.id),
         number: order.number,
         createdAt: order.createdAt,
-        lines: order.lines,
+        lines: order.items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+        })),
         total: order.total,
       });
     });
 
     return all;
-  }, [hasCart, cart, cartTotal, cartOrderNumber, cartCreatedAt, pendingOrders]);
+  }, [hasCart, cart, cartSubtotal, draftOrderNumber, pendingOrders]);
 
   // A stale `selected` id (e.g. an order that was just paid) falls back to the
-  // first option, which is the POS cart whenever one exists.
-  const target =
-    options.find((option) => option.id === selected) ?? options[0] ?? null;
-
+  // first option, which is the basket whenever one exists.
+  const target = options.find((option) => option.id === selected) ?? options[0] ?? null;
   const total = target?.total ?? 0;
 
   // Default the field to the exact total; a typed value wins for this target only.
   const received =
-    receivedFor && receivedFor.id === target?.id
-      ? receivedFor.value
-      : total.toFixed(2);
+    receivedFor && receivedFor.id === target?.id ? receivedFor.value : total.toFixed(2);
 
   const receivedValue = Number(received) || 0;
   const change = Math.max(0, receivedValue - total);
@@ -127,19 +131,15 @@ export default function PaymentScreen() {
     if (!target || !canConfirm) return;
 
     if (target.id === CART_TARGET) {
-      checkout(method, receivedValue);
+      checkout({ method, amountReceived: receivedValue });
     } else {
-      payPendingOrder(target.id, method, receivedValue);
+      payOrder(Number(target.id), { method, amountReceived: receivedValue });
     }
     router.push('/payment-success');
   };
 
-  // The Pending tab lists the other payable orders (including the POS cart, so it
-  // stays reachable once an older order has been selected); Paid lists history.
-  const others =
-    tab === 'Pending'
-      ? options.filter((option) => option.id !== target?.id)
-      : paidOrders;
+  const otherTargets =
+    tab === 'Pending' ? options.filter((option) => option.id !== target?.id) : [];
 
   return (
     <Screen>
@@ -155,7 +155,6 @@ export default function PaymentScreen() {
       >
         <SegmentedControl options={['Pending', 'Paid'] as const} value={tab} onChange={setTab} />
 
-        {/* Order awaiting payment */}
         {target ? (
           <Card style={styles.orderCard}>
             <View style={styles.orderHead}>
@@ -172,9 +171,9 @@ export default function PaymentScreen() {
             <Divider />
 
             {target.lines.map((line) => (
-              <View key={`${line.dishId}-${line.note ?? ''}`} style={styles.orderLine}>
+              <View key={line.id} style={styles.orderLine}>
                 <Text style={styles.orderLineItem} numberOfLines={1}>
-                  {nameFor(line.dishId)} × {line.quantity}
+                  {line.name} × {line.quantity}
                 </Text>
                 <Text style={styles.orderLineAmount}>
                   {peso(line.unitPrice * line.quantity)}
@@ -199,27 +198,39 @@ export default function PaymentScreen() {
           </Card>
         )}
 
-        {/* Other orders in the current tab */}
-        {others.length > 0 ? (
+        {tab === 'Pending' && otherTargets.length > 0 ? (
           <View style={styles.secondaryList}>
-            {tab === 'Pending'
-              ? others.map((option) => (
-                  <OrderRow
-                    key={option.id}
-                    target={option}
-                    isDraft={option.id === CART_TARGET}
-                    selected={option.id === target?.id}
-                    onPress={() => setSelected(option.id)}
-                  />
-                ))
-              : paidOrders.map((order) => (
-                  <OrderRow
-                    key={order.id}
-                    order={order}
-                    selected={false}
-                    onPress={() => setSelected(order.id)}
-                  />
-                ))}
+            {otherTargets.map((option) => (
+              <TargetRow
+                key={option.id}
+                id={option.id}
+                number={option.number}
+                createdAt={option.createdAt}
+                itemCount={option.lines.reduce((sum, line) => sum + line.quantity, 0)}
+                total={option.total}
+                isDraft={option.id === CART_TARGET}
+                selected={option.id === target?.id}
+                onPress={() => setSelected(option.id)}
+              />
+            ))}
+          </View>
+        ) : null}
+
+        {tab === 'Paid' && paidOrders.length > 0 ? (
+          <View style={styles.secondaryList}>
+            {paidOrders.map((order) => (
+              <TargetRow
+                key={order.id}
+                id={String(order.id)}
+                number={order.number}
+                createdAt={order.createdAt}
+                itemCount={order.items.reduce((sum, item) => sum + item.quantity, 0)}
+                total={order.total}
+                settled
+                selected={false}
+                onPress={() => setSelected(String(order.id))}
+              />
+            ))}
           </View>
         ) : null}
 
@@ -283,7 +294,10 @@ export default function PaymentScreen() {
             <View style={styles.changeRow}>
               <Text style={styles.changeLabel}>Change</Text>
               <Text
-                style={[styles.changeValue, change === 0 && receivedValue < total && { color: colors.danger }]}
+                style={[
+                  styles.changeValue,
+                  change === 0 && receivedValue < total && { color: colors.danger },
+                ]}
               >
                 {peso(change)}
               </Text>
@@ -304,29 +318,38 @@ export default function PaymentScreen() {
           disabled={!canConfirm}
           onPress={confirm}
         />
+
+        {cartCount > 0 && tab === 'Pending' ? (
+          <Text style={styles.hint}>
+            {cartCount} {cartCount === 1 ? 'item is' : 'items are'} still in the basket.
+          </Text>
+        ) : null}
       </ScrollView>
     </Screen>
   );
 }
 
-type OrderRowProps = {
+function TargetRow({
+  id,
+  number,
+  createdAt,
+  itemCount,
+  total,
+  settled = false,
+  isDraft = false,
+  selected,
+  onPress,
+}: {
+  id: string;
+  number: string;
+  createdAt: string;
+  itemCount: number;
+  total: number;
+  settled?: boolean;
+  isDraft?: boolean;
   selected: boolean;
   onPress: () => void;
-  /** A still-payable order: the POS cart or a pending order. */
-  target?: PayableTarget;
-  /** An already-settled order from history. */
-  order?: Order;
-  /** Marks the in-progress POS order so it reads differently from a held order. */
-  isDraft?: boolean;
-};
-
-function OrderRow({ target, order, isDraft, selected, onPress }: OrderRowProps) {
-  const number = target?.number ?? order?.number ?? '—';
-  const createdAt = target?.createdAt ?? order?.createdAt;
-  const lines = target?.lines ?? order?.lines ?? [];
-  const total = target?.total ?? order?.total ?? 0;
-  const settled = Boolean(order);
-
+}) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -343,8 +366,7 @@ function OrderRow({ target, order, isDraft, selected, onPress }: OrderRowProps) 
           {isDraft ? 'Current order' : `Order #${number}`}
         </Text>
         <Text style={styles.secondaryMeta} numberOfLines={1}>
-          {createdAt ? `${friendlyDate(createdAt)}, ${to12Hour(createdAt)} · ` : ''}
-          {lines.reduce((sum, line) => sum + line.quantity, 0)} items
+          {friendlyDate(createdAt)}, {to12Hour(createdAt)} · {itemCount} items
         </Text>
       </View>
       <View style={styles.secondaryRight}>
@@ -445,5 +467,6 @@ const styles = StyleSheet.create({
   changeValue: { ...type.titleMd, color: colors.success },
 
   walletNote: { ...type.bodyMd, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing.md },
+  hint: { ...type.caption, color: colors.textMuted, textAlign: 'center' },
   pressed: { opacity: 0.75 },
 });

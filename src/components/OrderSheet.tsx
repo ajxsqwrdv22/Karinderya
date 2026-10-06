@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useAppState } from '../store/AppState';
+import { setCartQuantity, usePosStore } from '../hooks/usePosStore';
 import { colors, radius, shadow, spacing, text as type } from '../theme';
 import { peso } from '../utils/format';
 import { Icon } from './Icon';
@@ -21,6 +21,8 @@ import { Divider, PrimaryButton } from './ui';
 /**
  * The bottom sheet from the "POS order sheet" frame: a scrim over the POS grid
  * with the cart contents, a discount field and the running total.
+ *
+ * Every line and quantity comes from the `cart_items` table.
  */
 export function OrderSheet({
   visible,
@@ -34,25 +36,19 @@ export function OrderSheet({
   onProceed: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const {
-    cart,
-    cartCount,
-    cartSubtotal,
-    cartTotal,
-    discount,
-    nameFor,
-    setCartQuantity,
-    setDiscount,
-  } = useAppState();
+  const { cart, cartCount } = usePosStore();
 
   const [code, setCode] = useState('');
+  const [discount, setDiscount] = useState(0);
 
+  const subtotal = cart.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);
+  const total = Math.max(0, subtotal - discount);
   const empty = cart.length === 0;
 
   const applyDiscount = () => {
     const parsed = Number(code.replace(/[^0-9.]/g, ''));
     if (Number.isFinite(parsed) && parsed > 0) {
-      setDiscount(Math.min(parsed, cartSubtotal));
+      setDiscount(Math.min(parsed, subtotal));
     }
   };
 
@@ -106,12 +102,14 @@ export function OrderSheet({
               showsVerticalScrollIndicator={false}
             >
               {cart.map((line) => (
-                <View key={`${line.dishId}-${line.note ?? ''}`} style={styles.item}>
+                <View key={line.id} style={styles.item}>
                   <View style={styles.itemText}>
                     <Text style={styles.itemName} numberOfLines={1}>
-                      {nameFor(line.dishId)}
+                      {line.name}
                     </Text>
-                    <Text style={styles.itemNote}>{line.note ?? 'Regular'}</Text>
+                    <Text style={styles.itemNote}>
+                      {line.note.length > 0 ? line.note : 'Regular'}
+                    </Text>
                     <Text style={styles.itemPrice}>
                       {peso(line.unitPrice * line.quantity)}
                     </Text>
@@ -120,8 +118,8 @@ export function OrderSheet({
                   <View style={styles.stepper}>
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={`Decrease ${nameFor(line.dishId)}`}
-                      onPress={() => setCartQuantity(line.dishId, line.note, line.quantity - 1)}
+                      accessibilityLabel={`Decrease ${line.name}`}
+                      onPress={() => setCartQuantity(line.id, line.quantity - 1)}
                       style={styles.stepButton}
                     >
                       <Icon name="minus" size={14} color={colors.primary} />
@@ -131,8 +129,8 @@ export function OrderSheet({
 
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={`Increase ${nameFor(line.dishId)}`}
-                      onPress={() => setCartQuantity(line.dishId, line.note, line.quantity + 1)}
+                      accessibilityLabel={`Increase ${line.name}`}
+                      onPress={() => setCartQuantity(line.id, line.quantity + 1)}
                       style={[styles.stepButton, styles.stepButtonFilled]}
                     >
                       <Icon name="plus" size={14} color={colors.surface} />
@@ -152,7 +150,7 @@ export function OrderSheet({
 
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Subtotal</Text>
-              <Text style={styles.summaryValue}>{peso(cartSubtotal)}</Text>
+              <Text style={styles.summaryValue}>{peso(subtotal)}</Text>
             </View>
 
             <View style={styles.discountField}>
@@ -185,14 +183,18 @@ export function OrderSheet({
 
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>{peso(cartTotal)}</Text>
+              <Text style={styles.totalValue}>{peso(total)}</Text>
             </View>
 
             <PrimaryButton
               label="Proceed to Payment"
               icon="arrow-right"
               disabled={empty}
-              onPress={onProceed}
+              onPress={() => {
+                setDiscount(0);
+                setCode('');
+                onProceed();
+              }}
               style={styles.proceed}
             />
           </View>

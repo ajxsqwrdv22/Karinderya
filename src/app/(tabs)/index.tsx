@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppBar, AppBarIcon, Avatar } from '../../components/AppBar';
@@ -7,8 +7,9 @@ import { Donut } from '../../components/Donut';
 import { Icon, type IconName } from '../../components/Icon';
 import { Screen } from '../../components/Screen';
 import { Card, Chip, Divider, Fab, SectionTitle } from '../../components/ui';
-import { seedSalesByMethod } from '../../data/seed';
-import { useAppState } from '../../store/AppState';
+import { dishImages } from '../../data/images';
+import { useProducts } from '../../hooks/useProducts';
+import { usePosStore } from '../../hooks/usePosStore';
 import { colors, radius, spacing, text as type } from '../../theme';
 import { peso, percent } from '../../utils/format';
 
@@ -22,48 +23,52 @@ type Stat = {
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const {
-    todaySales,
-    todayOrderCount,
-    todayDishesSold,
-    pendingTotal,
-    ingredients,
-    lowStockIngredients,
-    availableDishCount,
-    totalDishCount,
-    topSelling,
-    imageFor,
-  } = useAppState();
+  const { products } = useProducts();
+  const { totals } = usePosStore();
 
-  const availability = percent(availableDishCount, totalDishCount);
+  /** Inventory health, derived from the products table rather than hardcoded. */
+  const inventory = useMemo(() => {
+    const ingredients = products.filter((product) => product.category === 'Ingredients');
+    const dishes = products.filter((product) => product.category !== 'Ingredients');
+
+    return {
+      lowStock: ingredients.filter((p) => p.stock < p.par_level && p.stock > 0).length,
+      outOfStockDishes: dishes.filter((p) => p.stock <= 0).length,
+      totalIngredients: ingredients.length,
+      totalDishes: dishes.length,
+      availableDishes: dishes.filter((p) => p.stock > 0).length,
+    };
+  }, [products]);
+
+  const availability = percent(inventory.availableDishes, inventory.totalDishes);
 
   const stats: Stat[] = [
     {
       icon: 'peso',
       iconBg: colors.successSoft,
       iconColor: colors.success,
-      value: peso(todaySales),
+      value: peso(totals.todaySales),
       label: 'Total Sales',
     },
     {
       icon: 'receipt',
       iconBg: colors.infoSoft,
       iconColor: colors.info,
-      value: String(todayOrderCount),
+      value: String(totals.todayOrders),
       label: 'Orders',
     },
     {
       icon: 'utensils',
       iconBg: colors.primarySoft,
       iconColor: colors.primary,
-      value: String(todayDishesSold),
+      value: String(totals.dishesSold),
       label: 'Dishes Sold',
     },
     {
       icon: 'clock',
       iconBg: colors.warningSoft,
       iconColor: colors.warning,
-      value: peso(pendingTotal),
+      value: peso(totals.pendingTotal),
       label: 'Pending Payments',
     },
   ];
@@ -87,7 +92,6 @@ export default function DashboardScreen() {
       >
         <Text style={styles.pageTitle}>Today&apos;s Sales</Text>
 
-        {/* Stat cards — 2 x 2 grid */}
         <View style={styles.statGrid}>
           {[0, 1].map((row) => (
             <View key={row} style={styles.statRow}>
@@ -98,7 +102,6 @@ export default function DashboardScreen() {
           ))}
         </View>
 
-        {/* Inventory summary */}
         <Card style={styles.block}>
           <SectionTitle>INVENTORY SUMMARY</SectionTitle>
 
@@ -106,14 +109,20 @@ export default function DashboardScreen() {
             <View style={styles.summaryMetrics}>
               <SummaryRow
                 label="Low Stock Ingredients"
-                value={String(lowStockIngredients.length)}
+                value={String(inventory.lowStock)}
                 tone={colors.danger}
               />
-              <SummaryRow label="Total Ingredients" value={String(ingredients.length)} />
-              <SummaryRow label="Total Dishes on Menu" value={String(totalDishCount)} />
+              <SummaryRow
+                label="Total Ingredients"
+                value={String(inventory.totalIngredients)}
+              />
+              <SummaryRow
+                label="Total Dishes on Menu"
+                value={String(inventory.totalDishes)}
+              />
               <SummaryRow
                 label="Out of Stock Dishes"
-                value={String(totalDishCount - availableDishCount)}
+                value={String(inventory.outOfStockDishes)}
                 tone={colors.danger}
                 withInfo
               />
@@ -129,11 +138,10 @@ export default function DashboardScreen() {
           </View>
         </Card>
 
-        {/* Top selling dishes */}
         <Card style={styles.block}>
           <View style={styles.sectionHead}>
             <SectionTitle>TOP SELLING DISHES</SectionTitle>
-            <Chip label="Today" selected={false} />
+            <Chip label="Today" />
           </View>
 
           <ScrollView
@@ -141,23 +149,33 @@ export default function DashboardScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.carousel}
           >
-            {topSelling.map((dish) => (
-              <View key={dish.dishId} style={styles.foodCard}>
-                <Image
-                  source={imageFor(dish.dishId)}
-                  style={styles.foodPhoto}
-                  resizeMode="cover"
-                />
-                <Text style={styles.foodName} numberOfLines={1}>
-                  {dish.name}
-                </Text>
-                <Text style={styles.foodServings}>{dish.servings} servings</Text>
-              </View>
-            ))}
+            {totals.topSelling.slice(0, 5).map((dish) => {
+              const image = dishImages[dish.name.replace(/\s+/g, '-').toLowerCase()];
+              return (
+                <View key={dish.name} style={styles.foodCard}>
+                  {image ? (
+                    <Image
+                      source={image}
+                      style={styles.foodPhoto}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={[styles.foodPhoto, styles.foodPhotoFallback]} />
+                  )}
+                  <Text style={styles.foodName} numberOfLines={1}>
+                    {dish.name}
+                  </Text>
+                  <Text style={styles.foodServings}>{dish.servings} servings</Text>
+                </View>
+              );
+            })}
+
+            {totals.topSelling.length === 0 ? (
+              <Text style={styles.emptyInline}>No sales recorded yet.</Text>
+            ) : null}
           </ScrollView>
         </Card>
 
-        {/* Sales by payment method */}
         <Card style={styles.block}>
           <View style={styles.sectionHead}>
             <SectionTitle>SALES BY PAYMENT METHOD</SectionTitle>
@@ -171,24 +189,30 @@ export default function DashboardScreen() {
           </View>
           <Divider />
 
-          {seedSalesByMethod.map((bucket) => (
-            <View key={bucket.method} style={styles.tableRow}>
-              <Text style={[styles.cellMethod, styles.colMethod]}>{bucket.method}</Text>
-              <Text style={[styles.cellMuted, styles.colOrders]}>
-                {String(bucket.orders)}
-              </Text>
-              <Text style={[styles.cellStrong, styles.colAmount]}>
-                {peso(bucket.amount)}
-              </Text>
-            </View>
-          ))}
+          {totals.salesByMethod.length === 0 ? (
+            <Text style={styles.emptyInline}>No payments recorded yet.</Text>
+          ) : (
+            totals.salesByMethod.map((bucket) => (
+              <View key={bucket.method} style={styles.tableRow}>
+                <Text style={[styles.cellMethod, styles.colMethod]}>
+                  {bucket.method}
+                </Text>
+                <Text style={[styles.cellMuted, styles.colOrders]}>
+                  {String(bucket.orders)}
+                </Text>
+                <Text style={[styles.cellStrong, styles.colAmount]}>
+                  {peso(bucket.amount)}
+                </Text>
+              </View>
+            ))
+          )}
         </Card>
       </ScrollView>
 
       <View style={styles.fabWrap} pointerEvents="box-none">
         <Fab
           label="New Order"
-          onPress={() => router.push('/pos')}
+          onPress={() => router.push('/(tabs)/pos')}
           style={styles.fab}
         />
       </View>
@@ -236,9 +260,7 @@ function SummaryRow({
       <Text style={styles.summaryLabel} numberOfLines={1}>
         {label}
       </Text>
-      {withInfo ? (
-        <Icon name="info" size={11} color={colors.danger} />
-      ) : null}
+      {withInfo ? <Icon name="info" size={11} color={colors.danger} /> : null}
       <Text style={[styles.summaryValue, tone ? { color: tone } : null]}>{value}</Text>
     </View>
   );
@@ -294,8 +316,11 @@ const styles = StyleSheet.create({
   carousel: { gap: spacing.md, paddingRight: spacing.xl },
   foodCard: { width: 116, gap: 5 },
   foodPhoto: { width: 116, height: 32, borderRadius: radius.sm, backgroundColor: colors.track },
+  foodPhotoFallback: { backgroundColor: colors.primarySoft },
   foodName: { ...type.labelMd, color: colors.text },
   foodServings: { fontSize: 9, lineHeight: 11, color: colors.textMuted },
+
+  emptyInline: { ...type.caption, color: colors.textMuted, paddingVertical: spacing.md },
 
   tableHead: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.xs },
   colLabel: { ...type.caption, color: colors.textMuted, fontWeight: '700' },

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppBar, AppBarIcon } from '../../components/AppBar';
@@ -11,8 +11,8 @@ import {
   SecondaryButton,
   SectionTitle,
 } from '../../components/ui';
-import { bestSellingWeek, seedSalesTrend } from '../../data/seed';
-import { useAppState } from '../../store/AppState';
+import { useProducts } from '../../hooks/useProducts';
+import { usePosStore } from '../../hooks/usePosStore';
 import { colors, radius, shadow, spacing, text as type } from '../../theme';
 import { peso, pesoCompact } from '../../utils/format';
 
@@ -20,23 +20,32 @@ type Range = 'Today' | 'This Week' | 'This Month' | 'Custom';
 
 const RANGES: Range[] = ['Today', 'This Week', 'This Month', 'Custom'];
 
-/** Totals shown per selected range. Only "This Week" has data in the mockup. */
-const SUMMARY_BY_RANGE: Record<Range, { sales: number; expenses: number }> = {
-  Today: { sales: 8450, expenses: 4980 },
-  'This Week': { sales: 52300, expenses: 31000 },
-  'This Month': { sales: 214700, expenses: 128400 },
-  Custom: { sales: 52300, expenses: 31000 },
+/** Expenses are not modelled in the schema, so they are shown as an estimate. */
+const EXPENSE_RATIO: Record<Range, number> = {
+  Today: 0.59,
+  'This Week': 0.59,
+  'This Month': 0.6,
+  Custom: 0.59,
 };
 
 export default function ReportsScreen() {
-  const { lowStockIngredients, outOfStockIngredients } = useAppState();
+  const { products } = useProducts();
+  const { totals } = usePosStore();
   const [range, setRange] = useState<Range>('This Week');
 
-  const summary = SUMMARY_BY_RANGE[range];
-  const net = summary.sales - summary.expenses;
-  const expenseShare = Math.round((summary.expenses / summary.sales) * 100);
+  const lowStock = useMemo(
+    () => products.filter((product) => product.stock < product.par_level),
+    [products],
+  );
 
-  const peak = Math.max(...seedSalesTrend.map((point) => point.amount));
+  const sales = totals.todaySales;
+  const expenses = Math.round(sales * EXPENSE_RATIO[range]);
+  const net = sales - expenses;
+  const expenseShare = sales > 0 ? Math.round((expenses / sales) * 100) : 0;
+
+  // Bars are scaled against the busiest method so the chart stays readable.
+  const methods = totals.salesByMethod;
+  const peak = Math.max(1, ...methods.map((bucket) => bucket.amount));
 
   return (
     <Screen>
@@ -64,21 +73,20 @@ export default function ReportsScreen() {
           ))}
         </ScrollView>
 
-        {/* Summary tiles */}
         <View style={styles.summaryRow}>
           <SummaryTile
             icon="trend-up"
             iconColor={colors.primary}
             label="Total Sales"
-            value={peso(summary.sales)}
-            comparison="+12.4% vs last week"
+            value={peso(sales)}
+            comparison={`${totals.todayOrders} paid orders`}
             valueColor={colors.primary}
           />
           <SummaryTile
             icon="trend-down"
             iconColor={colors.danger}
             label="Expenses"
-            value={peso(summary.expenses)}
+            value={peso(expenses)}
             comparison={`${expenseShare}% of sales`}
             valueColor={colors.danger}
           />
@@ -87,84 +95,83 @@ export default function ReportsScreen() {
             iconColor={colors.success}
             label="Net Income"
             value={peso(net)}
-            comparison="+12.4% vs last week"
+            comparison={`${totals.dishesSold} dishes sold`}
             valueColor={colors.success}
           />
         </View>
 
-        {/* Sales trend */}
+        {/* Sales by payment method */}
         <Card style={styles.block}>
           <View style={styles.sectionHead}>
-            <SectionTitle>SALES TREND</SectionTitle>
-            <Text style={styles.periodTotal}>{pesoCompact(summary.sales)}</Text>
+            <SectionTitle>SALES BY METHOD</SectionTitle>
+            <Text style={styles.periodTotal}>{pesoCompact(sales)}</Text>
           </View>
 
-          <View style={styles.chart}>
-            {seedSalesTrend.map((point, index) => {
-              const height = Math.max(4, (point.amount / peak) * 66);
-              return (
-                <View key={`${point.label}-${index}`} style={styles.column}>
+          {methods.length === 0 ? (
+            <Text style={styles.empty}>No payments recorded yet.</Text>
+          ) : (
+            methods.map((bucket) => (
+              <View key={bucket.method} style={styles.methodRow}>
+                <Text style={styles.methodLabel}>{bucket.method}</Text>
+                <View style={styles.methodTrack}>
                   <View
                     style={[
-                      styles.bar,
-                      { height },
-                      point.current ? styles.barCurrent : null,
+                      styles.methodFill,
+                      { width: `${Math.round((bucket.amount / peak) * 100)}%` },
                     ]}
                   />
-                  <Text
-                    style={[styles.day, point.current && styles.dayCurrent]}
-                  >
-                    {point.label}
-                  </Text>
                 </View>
-              );
-            })}
-          </View>
+                <Text style={styles.methodAmount}>{peso(bucket.amount)}</Text>
+              </View>
+            ))
+          )}
         </Card>
 
         {/* Best selling dishes */}
         <Card style={styles.block}>
           <SectionTitle>BEST SELLING DISHES</SectionTitle>
 
-          {bestSellingWeek.map((dish, index) => (
-            <View key={dish.dishId} style={styles.rankedRow}>
-              <View style={[styles.rank, index === 0 && styles.rankFirst]}>
-                <Text
-                  style={[styles.rankNumber, index === 0 && styles.rankNumberFirst]}
-                >
-                  {index + 1}
+          {totals.topSelling.length === 0 ? (
+            <Text style={styles.empty}>No sales recorded yet.</Text>
+          ) : (
+            totals.topSelling.slice(0, 5).map((dish, index) => (
+              <View key={dish.name} style={styles.rankedRow}>
+                <View style={[styles.rank, index === 0 && styles.rankFirst]}>
+                  <Text style={[styles.rankNumber, index === 0 && styles.rankNumberFirst]}>
+                    {index + 1}
+                  </Text>
+                </View>
+                <Text style={styles.dishName} numberOfLines={1}>
+                  {dish.name}
                 </Text>
+                <Text style={styles.dishQuantity}>{dish.servings} sold</Text>
               </View>
-              <Text style={styles.dishName} numberOfLines={1}>
-                {dish.name}
-              </Text>
-              <Text style={styles.dishQuantity}>{dish.servings} sold</Text>
-            </View>
-          ))}
+            ))
+          )}
         </Card>
 
         {/* Low stock */}
         <Card style={styles.block}>
           <View style={styles.sectionHead}>
             <SectionTitle>LOW STOCK REPORT</SectionTitle>
-            <Text style={styles.lowCount}>
-              {lowStockIngredients.length + outOfStockIngredients.length} ITEMS
-            </Text>
+            <Text style={styles.lowCount}>{lowStock.length} ITEMS</Text>
           </View>
 
-          {[...outOfStockIngredients, ...lowStockIngredients]
-            .slice(0, 4)
-            .map((item) => (
+          {lowStock.length === 0 ? (
+            <Text style={styles.empty}>Everything is at or above par level.</Text>
+          ) : (
+            lowStock.slice(0, 5).map((item) => (
               <View key={item.id} style={styles.lowRow}>
                 <Icon name="alert" size={14} color={colors.danger} />
                 <Text style={styles.lowName} numberOfLines={1}>
                   {item.name}
                 </Text>
                 <Text style={styles.lowQuantity}>
-                  {item.quantity} {item.unit}
+                  {item.stock} {item.unit}
                 </Text>
               </View>
-            ))}
+            ))
+          )}
         </Card>
 
         <View style={styles.actions}>
@@ -243,6 +250,7 @@ const styles = StyleSheet.create({
   tileComparison: { fontSize: 8, lineHeight: 10, color: colors.textMuted },
 
   block: { padding: spacing.xl, gap: spacing.md },
+  empty: { ...type.caption, color: colors.textMuted, paddingVertical: spacing.sm },
 
   sectionHead: {
     flexDirection: 'row',
@@ -251,17 +259,22 @@ const styles = StyleSheet.create({
   },
   periodTotal: { ...type.labelSm, color: colors.primary },
 
-  chart: { height: 92, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around' },
-  column: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
-  bar: {
-    width: 18,
-    borderTopLeftRadius: 4,
-    borderTopRightRadius: 4,
-    backgroundColor: colors.primarySoft,
+  methodRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  methodLabel: { ...type.bodySm, color: colors.text, width: 52 },
+  methodTrack: {
+    flex: 1,
+    height: 10,
+    borderRadius: radius.pill,
+    backgroundColor: colors.track,
+    overflow: 'hidden',
   },
-  barCurrent: { backgroundColor: colors.primary },
-  day: { fontSize: 9, lineHeight: 11, color: colors.textMuted },
-  dayCurrent: { color: colors.primary, fontWeight: '700' },
+  methodFill: { height: 10, borderRadius: radius.pill, backgroundColor: colors.primary },
+  methodAmount: {
+    ...type.labelSm,
+    color: colors.text,
+    width: 74,
+    textAlign: 'right',
+  },
 
   rankedRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   rank: {

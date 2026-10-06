@@ -23,7 +23,12 @@ import {
   SCHEMA_VERSION,
 } from '../src/services/schema.ts';
 import { buildSku, slugify } from '../src/services/sku.ts';
-import { seedDishes, seedIngredients } from '../src/data/seed.ts';
+import {
+  SEED_TODAY,
+  buildSeedPaidOrders,
+  seedDishes,
+  seedIngredients,
+} from '../src/data/seed.ts';
 
 let passed = 0;
 let failed = 0;
@@ -232,6 +237,68 @@ db.prepare(QUERIES.setMeta).run('next_order_number', '67');
 db.prepare(QUERIES.setMeta).run('next_order_number', '68');
 check('setMeta upserts by key',
   (db.prepare(QUERIES.getMeta).get('next_order_number') as any).value === '68');
+
+section('Checkout draws down stock (matches checkoutFromCart)');
+// Mirrors db.checkoutFromCart: upsert cart lines, insert the order and its
+// items, decrement stock for each line, then pay and clear the basket.
+const stockBeforeCheckout = (db.prepare(QUERIES.productById).get(5) as any).stock;
+db.prepare(QUERIES.upsertCartItem).run(5, '', 2, 30.0);
+db.prepare(QUERIES.upsertCartItem).run(2, '', 1, 75.0);
+
+const cartSubtotal = db
+  .prepare(QUERIES.cartItems)
+  .all()
+  .reduce((sum: number, line: any) => sum + line.unit_price * line.quantity, 0);
+check('cart subtotal is 2x30 + 1x75', cartSubtotal === 135, `subtotal=${cartSubtotal}`);
+
+db.exec('BEGIN;');
+const checkoutOrder = db
+  .prepare(QUERIES.insertOrder)
+  .run('0099', 'pending', '2026-10-07 10:00:00', cartSubtotal, 0, cartSubtotal, null, null, null);
+const checkoutId = lastInsertId(checkoutOrder);
+db.prepare(QUERIES.insertOrderItem).run(checkoutId, 5, 'Steamed Rice', '', 2, 30.0);
+db.prepare(QUERIES.insertOrderItem).run(checkoutId, 2, 'Sinigang na Baboy', '', 1, 75.0);
+db.prepare(QUERIES.adjustStock).run(-2, 5);
+db.prepare(QUERIES.payOrder).run('GCash', 135, 0, checkoutId);
+db.prepare(QUERIES.clearCart).run();
+db.exec('COMMIT;');
+
+check('checkout emptied the basket',
+  (db.prepare(QUERIES.cartItems).all() as any[]).length === 0);
+check('checkout decremented sold stock by the quantity',
+  (db.prepare(QUERIES.productById).get(5) as any).stock === stockBeforeCheckout - 2,
+  `${stockBeforeCheckout} -> ${(db.prepare(QUERIES.productById).get(5) as any).stock}`);
+check('unsold stock untouched',
+  (db.prepare(QUERIES.productById).get(2) as any).stock === 8);
+const checkoutRow = db.prepare('SELECT * FROM orders WHERE id = ?;').get(checkoutId) as any;
+check('checkout recorded the payment method',
+  checkoutRow.status === 'paid' && checkoutRow.payment_method === 'GCash',
+  `${checkoutRow.status}/${checkoutRow.payment_method}`);
+
+section('Order number allocation');
+db.prepare(QUERIES.setMeta).run('next_order_number', '67');
+const peek = () => Number((db.prepare(QUERIES.getMeta).get('next_order_number') as any).value);
+check('peek does not consume the number', peek() === 67 && peek() === 67);
+db.prepare(QUERIES.setMeta).run('next_order_number', String(peek() + 1));
+check('allocation advances the counter', peek() === 68, `next=${peek()}`);
+
+section('Seeded sales history matches the Dashboard targets');
+const history = buildSeedPaidOrders();
+const historyTotal = history.reduce((sum, order) => sum + order.total, 0);
+const historyItems = history.reduce(
+  (sum, order) => sum + order.lines.reduce((n, line) => n + line.quantity, 0),
+  0,
+);
+check('history has the expected order count',
+  history.length === SEED_TODAY.orderCount, `${history.length}`);
+check('history items match the Dashboard figure',
+  historyItems === SEED_TODAY.dishesSold, `${historyItems}`);
+check('history total matches the Dashboard figure',
+  historyTotal === SEED_TODAY.totalSales, `${historyTotal}`);
+check('every history line references a seeded dish',
+  history.every((order) =>
+    order.lines.every((line) => seedDishes.some((dish) => dish.id === line.dishId))),
+  'unknown dish id in history');
 
 db.close();
 for (const suffix of ['', '-wal', '-shm']) {

@@ -1,30 +1,30 @@
 import { useRouter } from 'expo-router';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppBar } from '../components/AppBar';
 import { Icon } from '../components/Icon';
 import { Screen } from '../components/Screen';
-import {
-  Card,
-  Divider,
-  PrimaryButton,
-  SecondaryButton,
-} from '../components/ui';
+import { Card, Divider, PrimaryButton, SecondaryButton } from '../components/ui';
 import { MERCHANT_NAME } from '../data/seed';
-import { useAppState } from '../store/AppState';
+import { usePosStore } from '../hooks/usePosStore';
 import { colors, radius, spacing, text as type } from '../theme';
 import { peso, to12Hour } from '../utils/format';
 
 /**
- * Shown after a payment is confirmed. Reads the receipt from app state so it
- * survives a deep link or a screen reload.
+ * Shown after a payment is confirmed.
+ *
+ * The receipt is rebuilt from the `orders` row rather than being handed over in
+ * navigation state, so it survives a reload or a deep link into this route.
  */
 export default function PaymentSuccessScreen() {
   const router = useRouter();
-  const { lastReceipt, clearReceipt } = useAppState();
+  const { orders } = usePosStore();
 
-  const receiptNumber = `R-${lastReceipt?.orderNumber ?? '0000'}`;
+  // Orders come back newest-first, so the first settled one is the receipt.
+  const receipt = useMemo(() => orders.find((order) => order.status === 'paid'), [orders]);
+
+  const receiptNumber = receipt ? `R-${receipt.number}` : 'R-0000';
 
   return (
     <Screen>
@@ -41,8 +41,8 @@ export default function PaymentSuccessScreen() {
         <View style={styles.message}>
           <Text style={styles.title}>Payment Successful</Text>
           <Text style={styles.description}>
-            {lastReceipt?.method ?? 'Cash'} payment recorded for Order #
-            {lastReceipt?.orderNumber ?? '—'}
+            {receipt?.method ?? 'Cash'} payment recorded for Order #
+            {receipt?.number ?? '—'}
           </Text>
         </View>
 
@@ -52,7 +52,7 @@ export default function PaymentSuccessScreen() {
               <Text style={styles.merchant}>{MERCHANT_NAME}</Text>
               <Text style={styles.receiptMeta}>
                 Receipt #{receiptNumber} ·{' '}
-                {lastReceipt ? to12Hour(lastReceipt.paidAt) : '—'}
+                {receipt ? to12Hour(receipt.createdAt) : '—'}
               </Text>
             </View>
             <View style={styles.paidBadge}>
@@ -62,14 +62,14 @@ export default function PaymentSuccessScreen() {
 
           <Divider />
 
-          <ReceiptRow label="Order total" value={peso(lastReceipt?.total ?? 0)} />
+          <ReceiptRow label="Order total" value={peso(receipt?.total ?? 0)} />
           <ReceiptRow
             label="Cash received"
-            value={peso(lastReceipt?.amountReceived ?? 0)}
+            value={peso(receipt?.amountReceived ?? 0)}
           />
           <ReceiptRow
             label="Change"
-            value={peso(lastReceipt?.change ?? 0)}
+            value={peso(receipt?.change ?? 0)}
             tone={colors.success}
           />
 
@@ -77,7 +77,7 @@ export default function PaymentSuccessScreen() {
 
           <View style={styles.paidRow}>
             <Text style={styles.paidLabelLarge}>Amount paid</Text>
-            <Text style={styles.paidAmount}>{peso(lastReceipt?.total ?? 0)}</Text>
+            <Text style={styles.paidAmount}>{peso(receipt?.total ?? 0)}</Text>
           </View>
         </Card>
 
@@ -86,19 +86,13 @@ export default function PaymentSuccessScreen() {
             label="Print Receipt"
             icon="printer"
             onPress={() =>
-              Alert.alert(
-                'Print Receipt',
-                'Receipt ' + receiptNumber + ' is ready to print.',
-              )
+              Alert.alert('Print Receipt', `Receipt ${receiptNumber} is ready to print.`)
             }
           />
           <PrimaryButton
             label="New Order"
             icon="plus"
-            onPress={() => {
-              clearReceipt();
-              router.replace('/(tabs)/pos');
-            }}
+            onPress={() => router.replace('/(tabs)/pos')}
           />
         </View>
 

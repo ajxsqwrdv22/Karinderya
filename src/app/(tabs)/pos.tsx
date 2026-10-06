@@ -7,36 +7,43 @@ import { Icon } from '../../components/Icon';
 import { OrderSheet } from '../../components/OrderSheet';
 import { Screen } from '../../components/Screen';
 import { Chip } from '../../components/ui';
+import { useProducts, type ProductRow } from '../../hooks/useProducts';
+import { addToCart, usePosStore } from '../../hooks/usePosStore';
 import { dishCategories } from '../../data/seed';
-import type { Dish } from '../../data/types';
-import { useAppState } from '../../store/AppState';
+import { dishImages } from '../../data/images';
 import { colors, radius, shadow, spacing, text as type } from '../../theme';
 import { peso } from '../../utils/format';
 
 type Category = (typeof dishCategories)[number];
 
+/** Menu categories only; ingredients are shown on the Inventory screen. */
+const MENU_CATEGORIES: string[] = dishCategories.filter((entry) => entry !== 'All');
+
 export default function PosScreen() {
   const router = useRouter();
-  const { dishes, cartCount, cartTotal, nextOrderNumber, addToCart, imageFor } =
-    useAppState();
+  const { products } = useProducts();
+  const { cartCount, cartSubtotal, draftOrderNumber: orderNumber } = usePosStore();
 
   const [category, setCategory] = useState<Category>('All');
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  const orderNumber = String(nextOrderNumber - 1).padStart(4, '0');
+  const menu = useMemo(
+    () => products.filter((product) => MENU_CATEGORIES.includes(product.category)),
+    [products],
+  );
 
-  const visibleDishes = useMemo(
+  const visible = useMemo(
     () =>
       category === 'All'
-        ? dishes
-        : dishes.filter((dish) => dish.category === category),
-    [dishes, category],
+        ? menu
+        : menu.filter((product) => product.category === category),
+    [menu, category],
   );
 
   // Two fixed-width columns, matching the 164px cards in the design.
-  const rows: Dish[][] = [];
-  for (let i = 0; i < visibleDishes.length; i += 2) {
-    rows.push(visibleDishes.slice(i, i + 2));
+  const rows: ProductRow[][] = [];
+  for (let i = 0; i < visible.length; i += 2) {
+    rows.push(visible.slice(i, i + 2));
   }
 
   return (
@@ -77,8 +84,7 @@ export default function PosScreen() {
                 <DishCard
                   key={dish.id}
                   dish={dish}
-                  image={imageFor(dish.id)}
-                  onAdd={() => addToCart(dish)}
+                  onAdd={() => addToCart(dish.id)}
                 />
               ))}
               {row.length === 1 ? <View style={styles.dishCardSpacer} /> : null}
@@ -94,7 +100,7 @@ export default function PosScreen() {
             <Text style={styles.summaryLabel}>
               Current Order · {cartCount} {cartCount === 1 ? 'item' : 'items'}
             </Text>
-            <Text style={styles.summaryAmount}>{peso(cartTotal)}</Text>
+            <Text style={styles.summaryAmount}>{peso(cartSubtotal)}</Text>
           </View>
 
           <Pressable
@@ -120,16 +126,9 @@ export default function PosScreen() {
   );
 }
 
-function DishCard({
-  dish,
-  image,
-  onAdd,
-}: {
-  dish: Dish;
-  image: any;
-  onAdd: () => void;
-}) {
-  const soldOut = !dish.available;
+function DishCard({ dish, onAdd }: { dish: ProductRow; onAdd: () => void }) {
+  const soldOut = dish.stock <= 0;
+  const image = dish.image_key ? dishImages[dish.image_key] : undefined;
 
   return (
     <View style={styles.dishCard}>

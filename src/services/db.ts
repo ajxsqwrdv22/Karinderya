@@ -1,6 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 
-import { seedDishes, seedIngredients } from '../data/seed';
+import { buildSeedPaidOrders, seedDishes, seedIngredients } from '../data/seed';
 import {
   DATABASE_NAME,
   QUERIES,
@@ -119,6 +119,8 @@ export function seedDatabase(): void {
       );
     });
 
+    seedSalesHistory();
+
     db.runSync(QUERIES.setMeta, 'next_order_number', '67');
   });
 }
@@ -223,7 +225,12 @@ export type CheckoutInput = {
   discount?: number;
 };
 
-/** Turns the current cart into a paid order, inside one transaction. */
+/**
+ * Turns the current cart into a paid order, inside one transaction.
+ *
+ * Selling a dish also draws down its stock, which is what eventually flips a
+ * product to "sold out" on the POS grid.
+ */
 export function checkoutFromCart(input: CheckoutInput): string {
   const cart = listCart();
   if (cart.length === 0) throw new Error('Cannot check out an empty cart.');
@@ -261,6 +268,7 @@ export function checkoutFromCart(input: CheckoutInput): string {
         line.quantity,
         line.unit_price,
       );
+      db.runSync(QUERIES.adjustStock, -line.quantity, line.product_id);
     });
 
     db.runSync(QUERIES.payOrder, input.method, input.amountReceived, change, orderId);
@@ -287,12 +295,90 @@ export function listOrderItems(orderId: number): OrderItemRow[] {
   return db.getAllSync<OrderItemRow>(QUERIES.orderItems, orderId);
 }
 
+/** All orders with their lines attached, newest first. */
+export function listOrdersWithItems(): (OrderRow & { items: OrderItemRow[] })[] {
+  const orders = listOrders();
+  if (orders.length === 0) return [];
+
+  // One query for every line, then grouped in JS to avoid N+1 round trips.
+  const items = db.getAllSync<OrderItemRow & { order_id: number }>(
+    'SELECT * FROM order_items ORDER BY id ASC;',
+  );
+
+  const byOrder = new Map<number, OrderItemRow[]>();
+  items.forEach((item) => {
+    const bucket = byOrder.get(item.order_id);
+    if (bucket) bucket.push(item);
+    else byOrder.set(item.order_id, [item]);
+  });
+
+  return orders.map((order) => ({ ...order, items: byOrder.get(order.id) ?? [] }));
+}
+
+/**
+ * Inserts the demo sales history so the Dashboard and Reports screens have real
+ * aggregates on first launch. Runs once, guarded by the orders table being empty.
+ */
+export function seedSalesHistory(): void {
+  const existing = db.getFirstSync<{ count: number }>('SELECT COUNT(*) AS count FROM orders;');
+  if ((existing?.count ?? 0) > 0) return;
+
+  db.withTransactionSync(() => {
+    buildSeedPaidOrders().forEach((order) => {
+      const subtotal = order.lines.reduce(
+        (sum, line) => sum + line.unitPrice * line.quantity,
+        0,
+      );
+
+      const inserted = db.runSync(
+        QUERIES.insertOrder,
+        order.number,
+        'paid',
+        order.createdAt,
+        subtotal,
+        0,
+        order.total,
+        order.paymentMethod ?? 'Cash',
+        order.total,
+        0,
+      );
+
+      order.lines.forEach((line) => {
+        const product = db.getFirstSync<ProductRow>(
+          'SELECT * FROM products WHERE sku = ?;',
+          line.dishId,
+        );
+
+        db.runSync(
+          QUERIES.insertOrderItem,
+          inserted.lastInsertRowId,
+          product?.id ?? null,
+          // Snapshot the display name, not the SKU: Reports groups by this value.
+          product?.name ?? line.dishId,
+          line.note ?? '',
+          line.quantity,
+          line.unitPrice,
+        );
+      });
+    });
+  });
+}
+
 function nextOrderNumber(): string {
-  const row = db.getFirstSync<{ value: string }>(QUERIES.getMeta, 'next_order_number');
-  const current = Number(row?.value ?? 67);
-  const padded = String(current).padStart(4, '0');
+  const current = peekNextOrderNumber();
   db.runSync(QUERIES.setMeta, 'next_order_number', String(current + 1));
-  return padded;
+  return String(current).padStart(4, '0');
+}
+
+/**
+ * The number the in-progress basket will be issued, without consuming it.
+ *
+ * Read from `meta` rather than derived from a row count so it stays correct
+ * after deletions.
+ */
+export function peekNextOrderNumber(): number {
+  const row = db.getFirstSync<{ value: string }>(QUERIES.getMeta, 'next_order_number');
+  return Number(row?.value ?? 67);
 }
 
 // --- Reporting ---------------------------------------------------------
